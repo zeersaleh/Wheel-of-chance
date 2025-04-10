@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wheel of Chance</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+    <style>
+        /* Apply the game font */
+        body {
+            font-family: 'Press Start 2P', cursive;
+            background-color: #f0f9ff; /* Light blue background */
+            color: #1e3a8a; /* Dark blue text */
+        }
+        /* Style the canvas */
+        canvas {
+            display: block;
+            margin: 0 auto;
+            max-width: 100%;
+            height: auto;
+        }
+        /* Style the button */
+        button {
+            font-family: 'Press Start 2P', cursive;
+            transition: transform 0.1s ease, box-shadow 0.1s ease;
+            box-shadow: 4px 4px 0px #1e3a8a; /* Button shadow */
+            border: 2px solid #1e3a8a; /* Button border */
+        }
+        button:active {
+            transform: translate(2px, 2px);
+            box-shadow: 2px 2px 0px #1e3a8a;
+        }
+        /* Style the pointer */
+        .pointer {
+            width: 0;
+            height: 0;
+            border-left: 20px solid transparent;
+            border-right: 20px solid transparent;
+            border-top: 30px solid #ef4444; /* Red pointer */
+            position: absolute;
+            top: -15px; /* Position above the wheel center */
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+        }
+        /* Style the result message box */
+        #result-box {
+            border: 4px dashed #fbbf24; /* Dashed yellow border */
+            background-color: #fef3c7; /* Light yellow background */
+            color: #ca8a04; /* Dark yellow text */
+            min-height: 50px; /* Ensure it has some height even when empty */
+            transition: opacity 0.5s ease-in-out;
+        }
+    </style>
+</head>
+<body class="flex flex-col items-center justify-center min-h-screen p-4">
+
+    <h1 class="text-3xl md:text-4xl font-bold mb-6 text-center text-blue-800">Wheel of Chance!</h1>
+
+    <div class="relative w-full max-w-sm md:max-w-md aspect-square mb-6">
+        <div class="pointer"></div> <canvas id="wheelCanvas" width="500" height="500"></canvas> </div>
+
+    <button id="spinButton" class="bg-green-500 hover:bg-green-600 text-white font-bold py-3 px-6 rounded-lg text-xl mb-6">
+        Spin!
+    </button>
+
+    <div id="result-box" class="w-full max-w-md p-4 rounded-lg text-center text-2xl font-bold opacity-0">
+        <p id="resultText"></p>
+    </div>
+
+    <div class="mt-8 text-center">
+        <a href="https://www.instagram.com/saleh__zeer/" target="_blank" rel="noopener noreferrer"
+           class="text-blue-600 hover:text-blue-800 underline">
+            Follow me on Instagram!
+        </a>
+    </div>
+
+    <script>
+        // Get references to HTML elements
+        const canvas = document.getElementById('wheelCanvas');
+        const ctx = canvas.getContext('2d');
+        const spinButton = document.getElementById('spinButton');
+        const resultText = document.getElementById('resultText');
+        const resultBox = document.getElementById('result-box');
+
+        // --- Configuration ---
+        const numSegments = 7; // Number of slices on the wheel
+        const names = ["Lyan", "Faris", "Jamal"]; // Names to potentially put on segments
+        const segmentColors = ["#f87171", "#fbbf24", "#34d399", "#60a5fa", "#c084fc", "#f472b6", "#a3a3a3"]; // Colors for segments
+        const friction = 0.99; // How quickly the wheel slows down (closer to 1 means slower deceleration)
+        const minSpinSpeed = 0.002; // The angular speed at which the wheel is considered stopped
+        const baseSpinDuration = 4000; // Base spin duration (visual only, physics determines actual stop)
+        const randomSpinVariance = 2000; // Random additional duration (visual only)
+
+        // --- State Variables ---
+        let segments = []; // Array to hold segment data (name, angles, color)
+        let currentAngle = 0; // Current rotation angle of the wheel
+        let spinSpeed = 0; // Current angular velocity of the wheel
+        let isSpinning = false; // Flag to indicate if the wheel is currently spinning
+        let animationFrameId = null; // ID for the requestAnimationFrame loop
+        let toneStarted = false; // Flag to ensure Tone.js audio context is started by user interaction
+
+        // --- Sound Synthesis (Tone.js) ---
+        // Using Tone.js to generate sounds dynamically, avoiding external audio files
+
+        // Synth for the spinning 'whirring' sound (using filtered noise)
+        const spinSynth = new Tone.NoiseSynth({
+            noise: { type: 'white' },
+            envelope: { attack: 0.01, decay: 0.1, sustain: 0.8, release: 0.1 }
+        });
+        const spinFilter = new Tone.AutoFilter({
+            frequency: "4m", // Modulation frequency for the filter sweep
+            baseFrequency: 400, // Center frequency of the filter
+            octaves: 3, // Range of the filter sweep
+            depth: 0.5 // Intensity of the filter effect
+        }).connect(Tone.Destination); // Connect the filter output to the speakers
+        spinSynth.connect(spinFilter); // Connect the noise synth output to the filter input
+        spinSynth.volume.value = -25; // Start with low volume for the spin sound
+
+        // Synth for the winning sound (a simple cheerful melody)
+        const winSynth = new Tone.PolySynth(Tone.Synth, {
+            oscillator: { type: "triangle" }, // Softer oscillator type
+            envelope: { attack: 0.02, decay: 0.1, sustain: 0.3, release: 0.5 }
+        }).toDestination(); // Connect directly to speakers
+        winSynth.volume.value = -6; // Set volume for the win sound
+
+        // --- Functions ---
+
+        /**
+         * Shuffles an array in place using the Fisher-Yates algorithm.
+         * @param {Array} array The array to shuffle.
+         */
+        function shuffleArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]]; // Swap elements
+            }
+        }
+
+        /**
+         * Assigns names to wheel segments, distributing them as evenly as possible
+         * and then shuffling the assignments randomly.
+         */
+        function assignNamesToSegments() {
+            let assignedNames = [];
+            const baseCount = Math.floor(numSegments / names.length); // Base number of segments per name
+            const remainder = numSegments % names.length; // How many names get an extra segment
+
+            // Distribute names
+            names.forEach((name, index) => {
+                const count = baseCount + (index < remainder ? 1 : 0); // Add extra segment if needed
+                for (let i = 0; i < count; i++) {
+                    assignedNames.push(name);
+                }
+            });
+
+            shuffleArray(assignedNames); // Randomize the order of names on the wheel
+
+            // Create segment objects with calculated angles and assigned names/colors
+            segments = [];
+            const anglePerSegment = (2 * Math.PI) / numSegments; // Angle size of each segment in radians
+            for (let i = 0; i < numSegments; i++) {
+                segments.push({
+                    name: assignedNames[i],
+                    startAngle: i * anglePerSegment,
+                    endAngle: (i + 1) * anglePerSegment,
+                    color: segmentColors[i % segmentColors.length] // Cycle through colors
+                });
+            }
+        }
+
+        /**
+         * Draws the entire wheel (segments, text, borders) onto the canvas.
+         */
+        function drawWheel() {
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const radius = Math.min(centerX, centerY) * 0.95; // Radius based on canvas size
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear previous frame
+            ctx.save(); // Save current context state (transformations, styles)
+            ctx.translate(centerX, centerY); // Move origin to canvas center
+            ctx.rotate(currentAngle); // Rotate the context for the wheel spin
+
+            // Draw each segment
+            segments.forEach(segment => {
+                // Draw segment arc (pie slice)
+                ctx.beginPath();
+                ctx.moveTo(0, 0); // Start at center
+                ctx.arc(0, 0, radius, segment.startAngle, segment.endAngle); // Draw arc
+                ctx.closePath(); // Close path back to center
+                ctx.fillStyle = segment.color; // Set segment color
+                ctx.fill(); // Fill the segment shape
+                ctx.strokeStyle = '#4b5563'; // Dark gray border for segments
+                ctx.lineWidth = 2;
+                ctx.stroke(); // Draw the border
+
+                // Draw Text inside the segment
+                ctx.save(); // Save context state for text rotation
+                const textAngle = segment.startAngle + (segment.endAngle - segment.startAngle) / 2; // Midpoint angle of segment
+                ctx.rotate(textAngle); // Rotate context to align text radially
+                ctx.textAlign = "right"; // Align text relative to its position
+                ctx.fillStyle = "#1f2937"; // Dark text color
+                ctx.font = "16px 'Press Start 2P'"; // Set font style and size
+                // Position text partway out from the center
+                ctx.fillText(segment.name, radius * 0.7, 10); // Draw text (adjust y-offset if needed)
+                ctx.restore(); // Restore context state before text rotation
+            });
+
+            ctx.restore(); // Restore context state before wheel rotation and translation
+
+             // Draw outer circle border for the whole wheel
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI); // Full circle
+            ctx.strokeStyle = '#374151'; // Darker border color
+            ctx.lineWidth = 5;
+            ctx.stroke();
+
+            // Draw a small decorative circle in the center
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius * 0.1, 0, 2 * Math.PI);
+            ctx.fillStyle = '#6b7280'; // Gray center circle
+            ctx.fill();
+            ctx.stroke(); // Stroke the center circle too
+        }
+
+        /**
+         * Determines which segment is currently pointed to by the top pointer.
+         * @returns {object} The winning segment object.
+         */
+        function getWinningSegment() {
+            // Normalize the final angle to be within 0 to 2*PI
+            const finalAngleNormalized = (currentAngle % (2 * Math.PI) + (2 * Math.PI)) % (2 * Math.PI);
+            // The pointer is at the top, which corresponds to 3*PI/2 or -PI/2 in the canvas coordinate system (0 is right)
+            const pointerAngle = (3 * Math.PI / 2);
+            // Calculate the effective angle under the pointer by subtracting the wheel's rotation
+            // Add 2*PI and take modulo to handle negative results and keep it within 0 to 2*PI
+            const effectiveAngle = (pointerAngle - finalAngleNormalized + (2 * Math.PI)) % (2 * Math.PI);
+
+            // Find the segment whose angle range contains the effective angle
+            for (const segment of segments) {
+                if (effectiveAngle >= segment.startAngle && effectiveAngle < segment.endAngle) {
+                    return segment;
+                }
+            }
+            // Fallback in case of rounding errors, return the first segment
+            return segments[0];
+        }
+
+        /**
+         * Plays a short, cheerful sound sequence using Tone.js to indicate a win.
+         */
+        function playWinSound() {
+            const now = Tone.now(); // Get the current audio context time
+            // Play a simple C major arpeggio
+            winSynth.triggerAttackRelease("C4", "8n", now); // Note C4, 8th note duration, start now
+            winSynth.triggerAttackRelease("E4", "8n", now + 0.15); // Note E4, start slightly later
+            winSynth.triggerAttackRelease("G4", "8n", now + 0.3);  // Note G4
+            winSynth.triggerAttackRelease("C5", "4n", now + 0.45); // Note C5, longer duration
+        }
+
+        /**
+         * The main animation loop, called repeatedly using requestAnimationFrame.
+         * Updates the wheel's angle based on spin speed and friction, redraws the wheel,
+         * and checks if the wheel should stop.
+         */
+        function animateSpin() {
+            if (!isSpinning) return; // Stop the loop if not spinning
+
+            // Apply friction to slow down the spin
+            spinSpeed *= friction;
+            // Update the wheel's angle
+            currentAngle += spinSpeed;
+
+            // Optional: Adjust spin sound volume based on speed (can be CPU intensive)
+            // spinSynth.volume.value = Tone.gainToDb(Math.min(1, spinSpeed * 20));
+
+            drawWheel(); // Redraw the wheel at the new angle
+
+            // Check if the wheel has slowed down enough to stop
+            if (spinSpeed < minSpinSpeed) {
+                // --- Stop Spinning ---
+                isSpinning = false;
+                spinButton.disabled = false; // Re-enable the spin button
+                spinButton.classList.remove('opacity-50', 'cursor-not-allowed'); // Restore button appearance
+                spinButton.classList.add('bg-green-500', 'hover:bg-green-600');
+                spinButton.textContent = "Spin!"; // Reset button text
+
+                // Stop the spinning sound effects
+                spinSynth.triggerRelease(Tone.now() + 0.1); // Release the noise envelope
+                spinFilter.stop(Tone.now() + 0.1); // Stop the filter modulation
+
+                // Determine the winner and display the result
+                const winner = getWinningSegment();
+                resultText.textContent = `It's ${winner.name}'s turn!`;
+                resultBox.classList.remove('opacity-0'); // Make result box visible
+
+                playWinSound(); // Play the winning sound
+
+                // Clean up the animation frame request
+                if (animationFrameId) {
+                    cancelAnimationFrame(animationFrameId);
+                    animationFrameId = null;
+                }
+            } else {
+                // Continue spinning: request the next frame
+                animationFrameId = requestAnimationFrame(animateSpin);
+            }
+        }
+
+        /**
+         * Initiates the spinning process when the spin button is clicked.
+         * Handles audio context start, sets initial spin speed, starts sounds,
+         * and kicks off the animation loop.
+         */
+        async function startSpin() {
+             // --- Start Tone.js audio context on the first user interaction ---
+             // Browsers often require user interaction to start audio playback
+            if (!toneStarted) {
+                try {
+                    await Tone.start(); // Attempt to start the audio context
+                    console.log('Audio context started');
+                    toneStarted = true; // Set flag so it doesn't try again
+                } catch (e) {
+                    console.error("Could not start Tone.js audio context:", e);
+                    // Optionally display a message to the user that audio might not work
+                    // return; // Might want to prevent spinning if audio fails critically
+                }
+            }
+
+            if (isSpinning) return; // Don't start a new spin if already spinning
+
+            isSpinning = true;
+            spinButton.disabled = true; // Disable button during spin
+            spinButton.classList.add('opacity-50', 'cursor-not-allowed'); // Visual feedback for disabled state
+            spinButton.classList.remove('bg-green-500', 'hover:bg-green-600');
+            spinButton.textContent = "Spinning..."; // Update button text
+            resultBox.classList.add('opacity-0'); // Hide previous result
+            resultText.textContent = ""; // Clear result text
+
+            assignNamesToSegments(); // Re-assign names randomly for each spin
+
+            // Set a random initial spin speed for variability
+            spinSpeed = 0.2 + Math.random() * 0.2; // Adjust range as needed
+
+            // Start the spinning sound effects if Tone started successfully
+            if (toneStarted) {
+                 try {
+                    spinSynth.triggerAttack(Tone.now()); // Start the noise
+                    spinFilter.start(Tone.now()); // Start the filter modulation
+                 } catch(e) {
+                     console.error("Error starting spin sound:", e);
+                 }
+            }
+
+
+            // Cancel any previous animation frame to prevent conflicts
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+            // Start the animation loop
+            animateSpin();
+        }
+
+        // --- Initialization ---
+        // Add event listener to the spin button
+        spinButton.addEventListener('click', startSpin);
+
+        // Initial setup: assign names and draw the wheel for the first time
+        assignNamesToSegments();
+        drawWheel();
+
+        // Redraw the wheel if the browser window is resized to maintain proportions
+        window.addEventListener('resize', drawWheel);
+
+    </script>
+
+</body>
+</html>
